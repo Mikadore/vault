@@ -1,4 +1,3 @@
-use crate::container::crypto;
 use packed_struct::prelude::*;
 
 use super::crypto::{aead, get_random_bytes, AeadNonce, Key};
@@ -7,10 +6,6 @@ use ring::pbkdf2::{self, PBKDF2_HMAC_SHA256};
 #[derive(PackedStruct, Debug)]
 #[packed_struct(endian = "lsb")]
 pub struct EncryptedData {
-    /// Minimum size is 512, maximum is 65536.
-    /// Must be a multiple of the AES block size,
-    /// i.e. 16.
-    pub block_size: u16,
     /// Total blocks in the file
     pub block_count: u64,
     /// The master data key
@@ -51,8 +46,9 @@ pub struct ContainerFileHeader {
     /// The value of this field is the **OUTPUT**
     /// of the AES operation given the aforementioned input
     pub encrypted_data_tag: [u8; 16],
-    /// 412 bytes are left for the encrypted payload
-    pub encrypted_data: [u8; 74],
+    /// 412 bytes are left for the encrypted payload,
+    /// currently only 72 are used
+    pub encrypted_data: [u8; 72],
 }
 
 impl ContainerFileHeader {
@@ -60,7 +56,6 @@ impl ContainerFileHeader {
     pub const MAGIC: &'static [u8; 36] = b"http://github.com/Mikadore/vault.git";
     pub const VERSION: u32 = 1;
     pub const PBKDF2_DEFAULT_ITERATIONS: u32 = 100_000;
-    pub const MIN_BLOCK_SIZE: u16 = 512;
 
     fn hash_password(password: &str, iterations: u32, salt: &[u8; 32]) -> Result<[u8; 32]> {
         let mut hash = [0; 32];
@@ -87,18 +82,6 @@ impl ContainerFileHeader {
         )?;
         let decrypted = EncryptedData::unpack_from_slice(&data)?;
         ensure!(
-            decrypted.block_size >= Self::MIN_BLOCK_SIZE,
-            "Invalid block size {}: minimum block size is {}",
-            decrypted.block_size,
-            Self::MIN_BLOCK_SIZE,
-        );
-        ensure!(
-            decrypted.block_size as usize % crypto::aes_xts::AES_BLOCK_SIZE == 0,
-            "Invalid block size {}: block size must be a multple of {}",
-            decrypted.block_size,
-            crypto::aes_xts::AES_BLOCK_SIZE,
-        );
-        ensure!(
             decrypted.block_count > 1,
             "Invalid block count {}: There must be at least one block",
             decrypted.block_count,
@@ -108,7 +91,6 @@ impl ContainerFileHeader {
 
     pub fn new(
         user_password: &str,
-        block_size: u16,
         block_count: usize,
         pbkdf2_iterations: u32,
     ) -> Result<(EncryptedData, Self)> {
@@ -117,7 +99,6 @@ impl ContainerFileHeader {
         let user_key = Key::from(user_key);
         let encrypted_data = EncryptedData {
             block_count: block_count as u64,
-            block_size,
             master_data_key: Key::random().to_bytes(),
             master_tweak_key: Key::random().to_bytes(),
         };
@@ -162,11 +143,9 @@ fn test_hash_reproducible() {
 fn test_decrypt_header() {
     const GOOD_PASS: &'static str = "ee8c5db0dad81aaf91103c489ed5c099";
     const BAD_PASS: &'static str = "123456789";
-    const BLOCK_SIZE: u16 = 4096;
-    const BLOCK_COUNT: u64 = 1024;
+    const BLOCK_COUNT: usize = 1024;
     let (_, header) = ContainerFileHeader::new(
         GOOD_PASS,
-        BLOCK_SIZE,
         BLOCK_COUNT,
         ContainerFileHeader::PBKDF2_DEFAULT_ITERATIONS,
     )
@@ -174,6 +153,5 @@ fn test_decrypt_header() {
     let bad_attempt = header.decrypt_header(BAD_PASS);
     assert!(bad_attempt.is_err());
     let decrypted = header.decrypt_header(GOOD_PASS).unwrap();
-    assert_eq!(decrypted.block_count, BLOCK_COUNT);
-    assert_eq!(decrypted.block_size, BLOCK_SIZE);
+    assert_eq!(decrypted.block_count, BLOCK_COUNT as u64);
 }

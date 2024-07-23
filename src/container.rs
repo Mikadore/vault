@@ -3,6 +3,7 @@ mod header;
 
 pub use header::{ContainerFileHeader, EncryptedData};
 
+use super::fs::BLOCK_SIZE;
 use crypto::{aes_xts::AESContext, Key};
 use eyre::{ensure, Context, Result};
 use packed_struct::prelude::*;
@@ -16,11 +17,10 @@ use tracing::{debug, trace};
 
 #[derive(Debug)]
 pub struct ContainerFile {
-    pub(crate) block_size: usize,
     pub(crate) aes_context: AESContext,
     pub(crate) data_addr: *mut u8,
     pub(crate) data_size: usize,
-    pub(crate) buffer: Vec<u8>,
+    pub(crate) buffer: [u8; BLOCK_SIZE],
 }
 
 impl ContainerFile {
@@ -73,8 +73,7 @@ impl ContainerFile {
         let fd = container.into_raw_fd();
         let size = Self::stat_file_size(fd)?;
         let block_count = decrypted.block_count as usize;
-        let block_size = decrypted.block_size as usize;
-        let expected_size = (block_count * block_size) + ContainerFileHeader::SIZE;
+        let expected_size = (block_count * BLOCK_SIZE) + ContainerFileHeader::SIZE;
         ensure!(
             size == expected_size,
             "File is too small: required {} bytes, is {} bytes",
@@ -90,34 +89,30 @@ impl ContainerFile {
             data_size: size - ContainerFileHeader::SIZE,
             data_addr: mmap,
             aes_context,
-            block_size,
-            buffer: vec![0; block_size],
+            buffer: [0; BLOCK_SIZE],
         })
     }
 
     pub fn read_block(&mut self, block_number: usize, block: &mut [u8]) {
-        assert!(
-            block.len() >= self.block_size,
-            "Provided buffer is too small"
-        );
-        let mut block = &mut block[..self.block_size];
-        let offset = block_number * self.block_size;
+        assert!(block.len() >= BLOCK_SIZE, "Provided buffer is too small");
+        let mut block = &mut block[..BLOCK_SIZE];
+        let offset = block_number * BLOCK_SIZE;
         assert!(offset <= self.data_size, "block number out of range");
         let addr = self.data_addr.wrapping_add(offset);
-        let data = unsafe { std::slice::from_raw_parts(addr, self.block_size) };
+        let data = unsafe { std::slice::from_raw_parts(addr, BLOCK_SIZE) };
         block.copy_from_slice(&data);
         self.aes_context.aes_xts_decrypt(&mut block, block_number);
     }
 
     pub fn write_block(&mut self, block_number: usize, block: &[u8]) {
-        assert!(block.len() == self.block_size);
-        let offset = block_number as usize * self.block_size;
+        assert!(block.len() == BLOCK_SIZE);
+        let offset = block_number as usize * BLOCK_SIZE;
         assert!(offset <= self.data_size, "block number out of range");
         self.buffer.copy_from_slice(&block);
         self.aes_context
             .aes_xts_encrypt(&mut self.buffer, block_number);
         let addr = self.data_addr.wrapping_add(offset);
-        let data: &mut [u8] = unsafe { std::slice::from_raw_parts_mut(addr, self.block_size) };
+        let data: &mut [u8] = unsafe { std::slice::from_raw_parts_mut(addr, BLOCK_SIZE) };
         data.copy_from_slice(&self.buffer)
     }
 
@@ -136,7 +131,6 @@ impl ContainerFile {
     pub fn create(
         path: impl AsRef<Path>,
         password: &str,
-        block_size: u16,
         block_count: usize,
         pbkdf2_iterations: u32,
     ) -> Result<()> {
@@ -152,7 +146,7 @@ impl ContainerFile {
             .write(true)
             .open(path)?;
         let (encrypted_data, header) =
-            ContainerFileHeader::new(password, block_size, block_count, pbkdf2_iterations)?;
+            ContainerFileHeader::new(password, block_count, pbkdf2_iterations)?;
         let header = header.pack().unwrap();
         // fill in header last to ensure the file is valid
         file.write_all(&[0; ContainerFileHeader::SIZE])?;
@@ -160,7 +154,7 @@ impl ContainerFile {
             Key::from(encrypted_data.master_data_key),
             Key::from(encrypted_data.master_tweak_key),
         );
-        let block = vec![0; block_size as usize];
+        let block = [0; BLOCK_SIZE];
         for block_number in 0..block_count {
             let mut data = block.clone();
             aes_ctx.aes_xts_encrypt(&mut data, block_number);

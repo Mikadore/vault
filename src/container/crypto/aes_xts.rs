@@ -141,7 +141,7 @@ mod tests {
         struct TestVector {
             data_key: Key,
             tweak_key: Key,
-            block_number: u64,
+            block_number: usize,
             plaintext: [u8; 512],
             ciphertext: [u8; 512],
         }

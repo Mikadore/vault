@@ -71,8 +71,6 @@ enum Command {
         password: Option<String>,
         #[arg(index = 2)]
         target: PathBuf,
-        #[arg(short = 'b', long)]
-        block_size: u16,
         #[arg(short = 'c', long)]
         block_count: u64,
         #[arg(long)]
@@ -90,7 +88,6 @@ fn main() -> Result<()> {
     match cli.command {
         Command::Create {
             target,
-            block_size,
             block_count,
             pbkdf2_iterations,
             password,
@@ -99,7 +96,6 @@ fn main() -> Result<()> {
             ContainerFile::create(
                 target,
                 &password,
-                block_size,
                 block_count as usize,
                 pbkdf2_iterations.unwrap_or(ContainerFileHeader::PBKDF2_DEFAULT_ITERATIONS),
             )

@@ -4,7 +4,7 @@
 //! and managing a group of blocks
 //! called a `Segment`.
 
-use super::{FSError, Result};
+use super::{FSError, Result, BLOCK_SIZE};
 use packed_struct::prelude::*;
 use tracing::debug;
 
@@ -59,17 +59,15 @@ pub struct Segment {
 #[packed_struct(endian = "lsb")]
 pub struct Superblock {
     pub block_count: u64,
-    pub block_size: u64,
     pub free_count: u64,
     pub next_free_block: u64,
 }
 
 pub struct Storage<Device: BlockIO> {
     device: Device,
-    block_size: usize,
     block_count: usize,
     blocks_free: usize,
-    buffer: Vec<u8>,
+    buffer: [u8; BLOCK_SIZE],
 }
 
 fn read_block<'slf>(
@@ -91,14 +89,14 @@ impl<Device: BlockIO> Storage<Device> {
 
     pub fn open(mut device: Device) -> Result<Self> {
         let block_size = device.block_size();
-        if block_size < 512 || block_size % 16 != 0 {
-            return Err(FSError::InvalidBlockSize);
+        if block_size != BLOCK_SIZE {
+            return Err(FSError::InvalidBlockSize { block_size });
         }
         let block_count = device.block_count();
         if block_count <= 1 {
             return Err(FSError::InvalidDevice);
         }
-        let mut buffer = vec![0; block_size];
+        let mut buffer = [0; BLOCK_SIZE];
         let (super_seg, super_dat) = read_block(&mut device, &mut buffer, 0);
         if super_seg.tag != SegmentTag::Superblock {
             return Err(FSError::InvalidBlockTag);
@@ -106,12 +104,6 @@ impl<Device: BlockIO> Storage<Device> {
         // Works for the same reason as reading a Segment
         let superblock =
             Superblock::unpack_from_slice(&super_dat[..std::mem::size_of::<Superblock>()]).unwrap();
-        if superblock.block_size as usize != block_size {
-            return Err(FSError::BlockSizeMismatch {
-                expected: superblock.block_size as usize,
-                device: block_size,
-            });
-        }
         if superblock.block_count as usize != block_count {
             debug!(
                 "Reported block size ({}) is different from expected ({})",
@@ -119,7 +111,6 @@ impl<Device: BlockIO> Storage<Device> {
             );
         }
         Ok(Self {
-            block_size,
             block_count,
             blocks_free: superblock.free_count as usize,
             buffer,
